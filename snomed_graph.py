@@ -272,6 +272,22 @@ class SnomedGraph():
         """          
         nx.write_gml(self.G, path)
 
+    def to_pandas(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Fetch node and edge CSVs for this graph
+    
+        Args:
+            None
+        Returns:
+            Two CSVs (nodes, edges) as Pandas DataFrames
+        """
+        nodes_df = (
+            pd.DataFrame([{"sctid": n, **self.G.nodes[n]} for n in self.G.nodes])
+            .set_index("sctid")
+        )
+        edges_df = nx.to_pandas_edgelist(self.G)
+        return nodes_df, edges_df
+
     @staticmethod
     def from_serialized(path: str):
         """
