@@ -126,7 +126,7 @@ class SnomedGraph():
             if c["group"] == 0 and c["type_id"] == SnomedGraph.is_a_relationship_typeId
         ]
 
-    def get_descendants(self, sctid: int, steps_removed: int = 1) -> List[int]:
+    def get_descendants(self, sctid: int, steps_removed: int = None) -> List[int]:
         """
         Retrieve descendants of a given concept.
     
@@ -134,10 +134,14 @@ class SnomedGraph():
             sctid: A valid SNOMED Concept ID.
             steps_removed: The number of levels down in the hierarchy to go.  
                            (1 => children; 2 => children + grandchildren, etc)
+                           if None then all children are retrieved.
         Returns:
             A list containing the SCTIDs of all descendants.
         """
-        assert steps_removed > 0
+        if steps_removed is None:
+            steps_removed = 99999
+        elif steps_removed <= 0:
+            raise AssertionError("steps_removed must be > 0 or None")
         children = self.get_children(sctid)
         descendants = set(children)
         if steps_removed > 1:
@@ -147,7 +151,7 @@ class SnomedGraph():
                 )
         return descendants
 
-    def get_ancestors(self, sctid: int, steps_removed: int = 1) -> List[int]:
+    def get_ancestors(self, sctid: int, steps_removed: int = None) -> List[int]:
         """
         Retrieve ancestors of a given concept.
     
@@ -155,10 +159,14 @@ class SnomedGraph():
             sctid: A valid SNOMED Concept ID.
             steps_removed: The number of levels up in the hierarchy to go.  
                            (1 => parents; 2 => parents + grandparents, etc)
+                           if None then all parents are retrieved.
         Returns:
             A list containing the SCTIDs of all descendants.
         """        
-        assert steps_removed > 0
+        if steps_removed is None:
+            steps_removed = 99999
+        elif steps_removed <= 0:
+            raise AssertionError("steps_removed must be > 0 or None")
         parents = self.get_parents(sctid)
         ancestors = set(parents)
         if steps_removed > 1:
@@ -176,6 +184,7 @@ class SnomedGraph():
         Args:
             sctid: A valid SNOMED Concept ID.
             steps_removed: The number of steps up or down in the hierarchy to go.
+                           Defaults to 1 (parents + children).
         Returns:
             A list containing the SCTIDs of all neighbours.
         """            
@@ -293,14 +302,22 @@ class SnomedGraph():
         try:                        
             release_date = match.group(0)
         except AttributeError:
-            raise AssertionError(f"The path does not appear to contain a valid SNOMED CT Release Format name.")        
+            raise AssertionError(
+                f"The path does not appear to contain a valid SNOMED CT Release Format name."
+            )
         else:
             # Load relationships
-            relationships_df = pd.read_csv(f"{path}/Snapshot/Terminology/sct2_Relationship_Snapshot_INT_{release_date}.txt", delimiter="\t")
+            relationships_df = pd.read_csv(
+                f"{path}/Snapshot/Terminology/sct2_Relationship_Snapshot_INT_{release_date}.txt", 
+                delimiter="\t"
+            )
             relationships_df = relationships_df[relationships_df.active == 1]
             
             # Load concepts
-            concepts_df = pd.read_csv(f"{path}/Snapshot/Terminology/sct2_Description_Snapshot-en_INT_{release_date}.txt", delimiter="\t")
+            concepts_df = pd.read_csv(
+                f"{path}/Snapshot/Terminology/sct2_Description_Snapshot-en_INT_{release_date}.txt", 
+                delimiter="\t"
+            )
             concepts_df = concepts_df[concepts_df.active == 1]
             concepts_df.set_index("conceptId", inplace=True)
 
@@ -309,7 +326,10 @@ class SnomedGraph():
             relationship_types = relationship_types[relationship_types.typeId == SnomedGraph.fsn_typeId]
             relationship_types = relationship_types.term.to_dict()
 
-            print(f"{concepts_df.shape[0]} terms and {relationships_df.shape[0]} relationships were found in the release.")
+            # Initialise the graph
+            n_concepts = concepts_df.shape[0]
+            n_relationships = relationships_df.shape[0]
+            print(f"{n_concepts} terms and {n_relationships} relationships were found in the release.")
             G = nx.DiGraph()            
 
             # Create relationships
