@@ -4,27 +4,130 @@ from tqdm.notebook import tqdm
 from itertools import groupby
 import re
 from itertools import pairwise
-from typing import Generator, Dict, List, Tuple, Type
+from typing import Generator, Dict, List, Tuple, Type, Set
+    
+    
+class SnomedConceptDetails():
+    """
+    A class to represent the essential details of a SNOMED CT concept
+    """
 
+    def __init__(self, sctid: int, fsn: str, synonyms: List[str] = None) -> None:
+        self.sctid = sctid
+        self.fsn = fsn
+        self.synonyms = synonyms
+
+    def __repr__(self):
+        return f"{self.sctid} | {self.fsn}"
+
+    @property
+    def hierarchy(self) -> str:
+        hierarchy_match = re.search(r'\(([^)]+)\)\s*$', self.fsn)
+        return hierarchy_match.group(1) if hierarchy_match else None        
+
+    def to_dict(self) -> Dict:
+        return {
+            "sctid": self.sctid, 
+            "fsn": self.fsn, 
+            "synonyms": self.synonyms,
+            "hierarchy": self.hierarchy
+        }
+
+    def __eq__(self, other):
+        return self.sctid == other.sctid
+
+    def __hash__(self):
+        return self.sctid
+
+
+class SnomedRelationship():
+    """
+    A class to represent a SNOMED CT relationship
+    """
+
+    def __init__(self, src: SnomedConceptDetails, tgt: SnomedConceptDetails, group: int, type: str, type_id: str) -> None:
+        self.src = src
+        self.tgt = tgt
+        self.group = group
+        self.type = type
+        self.type_id = type_id
+
+    def __repr__(self):
+        return f"[{self.src}] ---[{self.type}]---> [{self.tgt}]"
+
+    def to_dict(self) -> Dict:
+        return {
+            "src_sctid": self.src.sctid, 
+            "tgt_sctid": self.tgt.sctid, 
+            "group": self.group,
+            "type": self.type, 
+            "type_id": self.type_id
+        }
+
+
+class SnomedRelationshipGroup():
+
+    def __init__(self, group: int, relationships: List[SnomedRelationship]) -> None:
+        self.group = group
+        self.relationships = relationships
+
+    def __repr__(self):
+        return f"Group {self.group}\n\t" + "\n\t".join([str(r) for r in self.relationships])
+
+    def to_dict_list(self):
+        return [{"group": self.group, **r.to_dict()} for r in self.relationships]
+
+
+class SnomedConcept():
+
+    def __init__(self, concept_details, parents, children, inferred_relationship_groups) -> None:
+        self.concept_details = concept_details
+        self.inferred_relationship_groups = inferred_relationship_groups
+        self.parents = parents
+        self.children = children
+
+    def __repr__(self):
+        str_ = str(self.concept_details)
+        str_ += f"\n\nSynonyms:\n{self.concept_details.synonyms}"
+        str_ += "\n\nParents:\n"
+        str_ += "\n".join([str(p) for p in self.parents])
+        str_ += "\n\nChildren:\n"
+        str_ += "\n".join([str(c) for c in self.children])
+        str_ += "\n\nInferred Relationships:\n"
+        str_ += "\n".join([str(rg) for rg in self.inferred_relationship_groups])
+        return str_
+
+    @property
+    def sctid(self) -> int:
+        return self.concept_details.sctid
+
+    @property
+    def fsn(self) -> str:
+        return self.concept_details.fsn
+
+    @property
+    def synonyms(self) -> List[str]:
+        return self.concept_details.synonyms      
+
+    @property
+    def hierarchy(self) -> str:
+        return self.concept_details.hierarchy      
 
 class SnomedGraph():
-
     """
     A class to represent a SNOMED CT release as a Graph, using NetworkX.
-    ...
 
     Attributes
     ----------
     G : nx.DiGraph
         The underlying graph
-    """
-    
+    """   
 
     fsn_typeId = 900000000000003001
     is_a_relationship_typeId = 116680003
     root_concept_id = 138875005
 
-    def __init__(self, G: nx.DiGraph):
+    def __init__(self, G: nx.DiGraph) -> None:
         """
         Create a new instance of SnomedGraph from a NetworkX DiGraph object
     
@@ -40,93 +143,72 @@ class SnomedGraph():
         return f"SNOMED graph has {self.G.number_of_nodes()} vertices and {self.G.number_of_edges()} edges"
 
     def __iter__(self):
-        return iter(self.G.nodes)       
+        return iter(self.G.nodes)
 
-    def summarise_concept(self, sctid: int) -> None:
+    def get_children(self, sctid: int) -> List[SnomedConceptDetails]:
+        return [
+            r.src for r in self.__get_in_relationships(sctid) 
+            if r.type_id == SnomedGraph.is_a_relationship_typeId
+        ]
+
+    def get_parents(self, sctid: int) -> List[SnomedConceptDetails]:
+        return [
+            r.tgt for r in self.__get_out_relationships(sctid) 
+            if r.type_id == SnomedGraph.is_a_relationship_typeId
+        ]
+
+    def get_inferred_relationships(self, sctid: int) -> List[SnomedRelationshipGroup]:
+        inferred_relationships = [
+            r for r in self.__get_out_relationships(sctid) 
+            if r.type_id != SnomedGraph.is_a_relationship_typeId
+        ]        
+        key_ = lambda r: r.group
+        inferred_relationships_grouped = groupby(
+            sorted(inferred_relationships, key=key_), 
+            key=key_
+        )
+        inferred_relationship_groups = [
+            SnomedRelationshipGroup(g, list(r)) 
+            for g,r in inferred_relationships_grouped
+        ] 
+        return inferred_relationship_groups
+
+    def get_concept_details(self, sctid: int) -> SnomedConceptDetails:
         """
-        Prints a summary of a concept.
-    
-        Args:
-            sctid: A valid SNOMED Concept ID.
-        Returns:
-            None
-        """        
-        parents = self.get_parents(sctid)
-        children = self.get_children(sctid)
-        inferred_relationships = self.get_inferred_relationships(sctid)
-        concept = self.G.nodes[sctid]
+        Retrieve the basic details for a concept: SCTID, FSN and synonyms.
+        """
+        return SnomedConceptDetails(sctid=sctid, **self.G.nodes[sctid])
         
-        print(f"""SCTID:\t\t{sctid}\nFSN:\t\t{concept["fsn"]}\nSynonyms:\t{concept["synonyms"]}""")
-        
-        print("\nParents:")
-        for sctid in parents:
-            fsn = self.G.nodes[sctid]["fsn"]
-            print(f"""\t{sctid} | {fsn}""")        
-            
-        print("\nChildren:")        
-        for sctid in children:
-            fsn = self.G.nodes[sctid]["fsn"]
-            print(f"""\t{sctid} | {fsn}""")        
-            
-        print("\nInferred Relationships:")        
-        for group_id, group in inferred_relationships.items():
-            print(f"\tGroup {group_id}")
-            for g in group:
-                print(f"""\t\t---[{g["type"]}]--->\t{g["sctid"]} | {g["fsn"]}""")        
-        
-    def __get_out_relationships(self, sctid: int) -> Generator[Dict, None, None]:
-        for src, tgt in self.G.out_edges(sctid):
-            vals = self.G.edges[(src, tgt)]
-            node = self.G.nodes[tgt]
-            yield {"fsn": node["fsn"], "sctid": tgt, **vals}
-
-    def __get_in_relationships(self, sctid: int) -> Generator[Dict, None, None]:
-        for src, tgt in self.G.in_edges(sctid):
-            vals = self.G.edges[(src, tgt)]
-            node = self.G.nodes[src]
-            yield {"fsn": node["fsn"], "sctid": src, **vals}        
-    
-    def get_concept(self, sctid: int) -> Dict:
+    def get_full_concept(self, sctid: int) -> SnomedConcept:
         """
         Retrieve all attributes for a given concept.
     
         Args:
             sctid: A valid SNOMED Concept ID.
         Returns:
-            A dictionary containing all the attributes of the concept.
+            A SnomedConcept.
         """
-        return {"sctid": sctid, **self.G.nodes[sctid]}
+        concept_details = self.get_concept_details(sctid)
+        parents = self.get_parents(sctid)
+        children = self.get_children(sctid)
+        inferred_relationship_groups = self.get_inferred_relationships(sctid)
+        return SnomedConcept(concept_details, parents, children, inferred_relationship_groups)
+        
+    def __get_out_relationships(self, src_sctid: int) -> Generator[Dict, None, None]:
+        src = SnomedConceptDetails(sctid=src_sctid, **self.G.nodes[src_sctid])
+        for _, tgt_sctid in self.G.out_edges(src_sctid):
+            tgt = SnomedConceptDetails(sctid=tgt_sctid, **self.G.nodes[tgt_sctid])
+            vals = self.G.edges[(src_sctid, tgt_sctid)]
+            yield SnomedRelationship(src, tgt, **vals)
 
-    def get_parents(self, sctid: int) -> List[int]:
-        """Retrieve all parents of a given concept.
-    
-        Args:
-            sctid: A valid SNOMED Concept ID.
-        Returns:
-            A list containing the SCTIDs of all parents.
-        """        
-        return [
-            p["sctid"]
-            for p in self.__get_out_relationships(sctid) 
-            if p["group"] == 0 and p["type_id"] == SnomedGraph.is_a_relationship_typeId
-        ]
+    def __get_in_relationships(self, tgt_sctid: int) -> Generator[Dict, None, None]:
+        tgt = SnomedConceptDetails(sctid=tgt_sctid, **self.G.nodes[tgt_sctid])
+        for src_sctid, _ in self.G.in_edges(tgt_sctid):
+            src = SnomedConceptDetails(sctid=src_sctid, **self.G.nodes[src_sctid])
+            vals = self.G.edges[(src_sctid, tgt_sctid)]
+            yield SnomedRelationship(src, tgt, **vals) 
 
-    def get_children(self, sctid: int) -> List[int]:
-        """
-        Retrieve all children of a given concept.
-    
-        Args:
-            sctid: A valid SNOMED Concept ID.
-        Returns:
-            A list containing the SCTIDs of all children.
-        """
-        return [
-            c["sctid"]
-            for c in self.__get_in_relationships(sctid) 
-            if c["group"] == 0 and c["type_id"] == SnomedGraph.is_a_relationship_typeId
-        ]
-
-    def get_descendants(self, sctid: int, steps_removed: int = None) -> List[int]:
+    def get_descendants(self, sctid: int, steps_removed: int = None) -> List[SnomedConceptDetails]:
         """
         Retrieve descendants of a given concept.
     
@@ -147,11 +229,11 @@ class SnomedGraph():
         if steps_removed > 1:
             for c in children:
                 descendants = descendants.union(
-                    [d for d in self.get_descendants(c, steps_removed-1)]
+                    self.get_descendants(c.sctid, steps_removed-1)
                 )
         return descendants
 
-    def get_ancestors(self, sctid: int, steps_removed: int = None) -> List[int]:
+    def get_ancestors(self, sctid: int, steps_removed: int = None) -> List[SnomedConceptDetails]:
         """
         Retrieve ancestors of a given concept.
     
@@ -172,11 +254,11 @@ class SnomedGraph():
         if steps_removed > 1:
             for p in parents:
                 ancestors = ancestors.union(
-                    [a for a in self.get_ancestors(p, steps_removed-1)]
+                    self.get_ancestors(p.sctid, steps_removed-1)
                 )
-        return ancestors.difference({SnomedGraph.root_concept_id})
+        return set([a for a in ancestors if not a.sctid == SnomedGraph.root_concept_id])
 
-    def get_neighbourhood(self, sctid: int, steps_removed: int = 1) -> List[int]:
+    def get_neighbourhood(self, sctid: int, steps_removed: int = 1) -> List[SnomedConceptDetails]:
         """
         Retrieve neighbours of a given concept.
         Neighbours include ancestors, descendants and cousins up to the given degree.
@@ -195,38 +277,15 @@ class SnomedGraph():
         if steps_removed > 1:
             for n in list(neighbourhood):
                 neighbourhood = neighbourhood.union(
-                    [p for p in self.get_neighbourhood(n, steps_removed-1)]
+                    self.get_neighbourhood(n.sctid, steps_removed-1)
                 )
-                neighbourhood = neighbourhood.union(
-                    [c for c in self.get_neighbourhood(n, steps_removed-1)]
-                )
-            neighbourhood = neighbourhood.difference([sctid])
-        return neighbourhood.difference({SnomedGraph.root_concept_id})
+        neighbourhood = [
+            n for n in neighbourhood
+            if n.sctid not in [sctid, SnomedGraph.root_concept_id]
+        ]
+        return neighbourhood
     
-    def get_inferred_relationships(self, sctid: int) -> Dict:
-        """
-        Retrieve the "Inferred Relationships" for a concept.
-        Inferred relationships exist in groups.  Together with the parents of a concept 
-        the set of inferred relationship groups constitute a unique specification of the
-        concept.
-    
-        Args:
-            sctid: A valid SNOMED Concept ID.
-        Returns:
-            A dictionary with keys = group IDs and values = list of inferred relationships
-        """          
-        key_ = lambda r: r["group"]
-        it = groupby(sorted(self.__get_out_relationships(sctid), key=key_), key=key_)
-        return {
-            group: [
-                {"type": r["type"], "fsn": r["fsn"], "sctid": r["sctid"]} 
-                for r in relationships
-                if r["type_id"] != SnomedGraph.is_a_relationship_typeId
-            ] 
-            for group, relationships in it
-        }
-
-    def find_path(self, sctid1: int, sctid2: int, print_: bool = False) -> List[Tuple]:
+    def find_path(self, sctid1: int, sctid2: int, print_: bool = False) -> List[SnomedRelationship]:
         """
         Returns details of any path that exists between two concepts.
         The path considers all relationship types but limits the results to true ancestors
@@ -236,11 +295,10 @@ class SnomedGraph():
         Args:
             sctid1: A valid SNOMED Concept ID.
             sctid2: A valid SNOMED Concept ID.
-            print_: Whether to print the full relationship as a string.
+            print_: Whether to print the full path as a string.
         Returns:
-            A list of tuples of the form (source, relationship_type, target).  The first
-            'source' element of the first tuple will be one of sctid1 or sctid2.  The last
-            'target' element of the last tuple will be the other sctid1 or sctid2.
+            A list of Relationships of the form (source, relationship_type, target).
+            These are the steps from source to target.
         """         
         path = []
         if nx.has_path(self.G, sctid1, sctid2):
@@ -249,16 +307,20 @@ class SnomedGraph():
             nodes = nx.shortest_path(self.G, sctid2, sctid1)
         else:
             nodes = []
-        for src, tgt in pairwise(nodes):
-            r = self.G.edges[(src, tgt)]
-            path.append((src, r["type"], tgt))
+        for src_sctid, tgt_sctid in pairwise(nodes):
+            vals = self.G.edges[(src_sctid, tgt_sctid)]
+            src = SnomedConceptDetails(sctid=src_sctid, **self.G.nodes[src_sctid])
+            tgt = SnomedConceptDetails(sctid=tgt_sctid, **self.G.nodes[tgt_sctid])
+            relationship = SnomedRelationship(src, tgt, **vals)
+            path.append(relationship)
         if print_:
-            src = path[0][0]
-            str_ = f"({self.get_concept(src)['fsn']})"
-            for _, rel, tgt in path:
-                str_ += f"---[{rel}]--->"
-                str_ += f"({self.get_concept(tgt)['fsn']})"
-            print(str_)
+            if len(nodes) > 0:
+                str_ = f"[{path[0].src}]"
+                for r in path:
+                    str_ += f" ---[{r.type}]---> [{r.tgt}]"
+                print(str_)
+            else:
+                print("No path found.")
         return path
 
     def save(self, path: str) -> None:
@@ -287,6 +349,18 @@ class SnomedGraph():
         )
         edges_df = nx.to_pandas_edgelist(self.G)
         return nodes_df, edges_df
+
+    @property
+    def relationship_types(self) -> Set[str]:
+        """
+        Fetch the set of all extant relationship types that exist.
+    
+        Args:
+            None
+        Returns:
+            A Set of strings
+        """
+        return set(nx.get_edge_attributes(self.G, "type").values())
 
     @staticmethod
     def from_serialized(path: str):
@@ -376,4 +450,4 @@ class SnomedGraph():
             
             # Initialise class            
             return SnomedGraph(G)
-            
+    
