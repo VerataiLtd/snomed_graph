@@ -2,7 +2,7 @@
  
 This is a simple Python library for working with [SNOMED CT](https://www.snomed.org).
 
-It has been designed to help newcomers to the terminology to easily load and query it.  The library does not support ECL (Expression Constraint Language), nor should it be considered to be a replacement for an Ontology Server.  Instead, the primary focus of the library is to support analytics and machine learning use cases by making it simple to extract sets of concepts and navigate the relationships between concepts.
+It has been designed to help newcomers to the terminology to easily load and query it.  The library does not support ECL (Expression Constraint Language), nor should it be considered to be a replacement for a Terminology Server like [Snowstorm](https://github.com/IHTSDO/snowstorm).  Instead, the primary focus of the library is to support analytics and machine learning use cases by making it simple to extract sets of concepts and navigate the relationships between concepts.
 
 The library has three dependencies: 
 
@@ -11,3 +11,9 @@ The library has three dependencies:
 - `tqdm`.
 
 Illustrations of the supported functions can be found in the `usage.ipynb` notebook.
+
+## License
+
+Apache 2.0
+
+See the included LICENSE file for details.
