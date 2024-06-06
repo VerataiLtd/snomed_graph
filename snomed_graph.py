@@ -24,12 +24,15 @@ class SnomedConceptDetails():
         return self.sctid == other.sctid
 
     def __hash__(self):
-        return self.sctid
+        return int(self.sctid)
 
     @property
     def hierarchy(self) -> str:
         hierarchy_match = re.search(r'\(([^)]+)\)\s*$', self.fsn)
-        
+        if hierarchy_match:
+            return hierarchy_match[0][1:-1]
+        else:
+            return ""
 
 class SnomedRelationship():
     """
@@ -283,7 +286,7 @@ class SnomedGraph():
     
     def find_path(self, sctid1: int, sctid2: int, print_: bool = False) -> List[SnomedRelationship]:
         """
-        Returns details of any path that exists between two concepts.
+        Returns details of the shortest path that exists between two concepts.
         The path considers all relationship types but limits the results to true ancestors
         or descentants - i.e. concepts that are "cousins" of one another will not result in
         a returned path.
@@ -294,7 +297,7 @@ class SnomedGraph():
             print_: Whether to print the full path as a string.
         Returns:
             A list of Relationships of the form (source, relationship_type, target).
-            These are the steps from source to target.
+            These are the steps of the shortest path from source to target.
         """         
         path = []
         if nx.has_path(self.G, sctid1, sctid2):
@@ -318,6 +321,44 @@ class SnomedGraph():
             else:
                 print("No path found.")
         return path
+
+    def path_to_root(self, sctid: int, print_: bool = False) -> List[SnomedRelationship]:
+        """
+        Finds the shortest "Is A" path from the concept to the Root concept.
+        Can be used to find the "depth" of a concept.
+        
+        Args:
+            sctid: A valid SNOMED Concept ID.
+            print_: Whether to print the full path as a string.
+        Returns:
+            A list of Relationships of the form (source, relationship_type, target).
+            These are the steps of the shortest path from the concept to the root.
+        """
+        shortest_path = None
+        for nodes in nx.all_simple_paths(self.G, sctid, self.root_concept_id):
+            path = list()
+            for src_sctid, tgt_sctid in pairwise(nodes):
+                vals = self.G.edges[(src_sctid, tgt_sctid)]
+                src = SnomedConceptDetails(sctid=src_sctid, **self.G.nodes[src_sctid])
+                tgt = SnomedConceptDetails(sctid=tgt_sctid, **self.G.nodes[tgt_sctid])
+                relationship = SnomedRelationship(src, tgt, **vals)
+                if relationship.type_id == self.is_a_relationship_typeId:
+                    path.append(relationship)
+                else:
+                    path = None
+                    break
+            if path:
+                if shortest_path:
+                    if len(shortest_path) > len(path):
+                        shortest_path = path
+                else:
+                    shortest_path = path
+        if print_:
+            str_ = f"[{shortest_path[0].src}]"
+            for r in shortest_path:
+                str_ += f" ---[{r.type}]---> [{r.tgt}]"
+            print(str_)
+        return shortest_path
 
     def save(self, path: str) -> None:
         """
