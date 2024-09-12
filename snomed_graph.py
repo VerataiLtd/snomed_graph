@@ -5,7 +5,9 @@ from itertools import groupby
 import re
 from itertools import pairwise
 from typing import Generator, Dict, List, Tuple, Type, Set
-    
+import os
+from datetime import datetime
+
     
 class SnomedConceptDetails():
     """
@@ -109,6 +111,7 @@ class SnomedGraph():
     fsn_typeId = 900000000000003001
     is_a_relationship_typeId = 116680003
     root_concept_id = 138875005
+    default_langcode = "en"
 
     def __init__(self, G: nx.DiGraph) -> None:
         """
@@ -128,6 +131,12 @@ class SnomedGraph():
     def __iter__(self):
         for sctid in self.G.nodes:
             yield self.get_concept_details(sctid)
+
+    def __len__(self):
+        return self.G.number_of_nodes()
+
+    def __contains__(self, item):
+        return item in self.G
 
     def get_children(self, sctid: int) -> List[SnomedConceptDetails]:
         return [
@@ -411,7 +420,35 @@ class SnomedGraph():
         """            
         G = nx.read_gml(path, destringizer=int)
         return SnomedGraph(G)    
-        
+
+    @staticmethod
+    def get_core_file_paths(path: str, langcode: str = "en"):
+        if not os.path.exists(path):
+            raise AssertionError(f'The path "{path}" does not exist')
+        base_dir = os.path.dirname(path)
+        dir = os.path.basename(path)
+        try:
+            elements = dir.split("_")
+            assert len(elements) in [4, 5]
+            if len(elements) == 5:
+                filetype, contenttype, contentsubtype, countrynamespace, versiondate = elements
+            else:
+                filetype, contenttype, contentsubtype, versiondate = elements
+                countrynamespace = "INT"
+            versiondate = datetime.strptime(versiondate, "%Y%m%dT%H%M%SZ").strftime("%Y%m%d")
+        except (AttributeError, ValueError, AssertionError):
+            raise AssertionError(
+                f' The specified folder "{dir}" does not appear to follow the SNOMED CT Release Format naming convention.'
+            )
+        else:
+            relationships_path = f"{base_dir}/{dir}/Snapshot/Terminology/sct2_Relationship_Snapshot_{countrynamespace}_{versiondate}.txt"
+            if not os.path.exists(relationships_path):
+                raise AssertionError(f'The path "{relationships_path}" does not exist')
+            descriptions_path = f"{base_dir}/{dir}/Snapshot/Terminology/sct2_Description_Snapshot-{langcode}_{countrynamespace}_{versiondate}.txt"
+            if not os.path.exists(descriptions_path):
+                raise AssertionError(f'The path "{descriptions_path}" does not exist')            
+        return relationships_path, descriptions_path
+
     @staticmethod
     def from_rf2(path: str):
         """
@@ -422,69 +459,53 @@ class SnomedGraph():
         Returns:
             A SnomedGraph
         """          
-        if path[-1] == "/":
-            path = path[:-1]
-        release_date_pattern = r'\d{8}'
-        match = re.search(release_date_pattern, path)
-        try:                        
-            release_date = match.group(0)
-        except AttributeError:
-            raise AssertionError(
-                f"The path does not appear to contain a valid SNOMED CT Release Format name."
+        relationships_path, descriptions_path = SnomedGraph.get_core_file_paths(path)
+        
+        # Load relationships
+        relationships_df = pd.read_csv(relationships_path, delimiter="\t")
+        relationships_df = relationships_df[relationships_df.active == 1]
+        
+        # Load concepts
+        concepts_df = pd.read_csv(descriptions_path, delimiter="\t")
+        concepts_df = concepts_df[concepts_df.active == 1]
+        concepts_df.set_index("conceptId", inplace=True)
+
+        # Create relationships type lookup
+        relationship_types = concepts_df.loc[relationships_df.typeId.unique()]
+        relationship_types = relationship_types[relationship_types.typeId == SnomedGraph.fsn_typeId]
+        relationship_types = relationship_types.term.to_dict()
+
+        # Initialise the graph
+        n_concepts = concepts_df.shape[0]
+        n_relationships = relationships_df.shape[0]
+        print(f"{n_concepts} terms and {n_relationships} relationships were found in the release.")
+        G = nx.DiGraph()            
+
+        # Create relationships
+        print("Creating Relationships...")
+        for r in tqdm(relationships_df.to_dict(orient="records")):
+            G.add_edge(        
+                r["sourceId"], 
+                r["destinationId"], 
+                group=r["relationshipGroup"], 
+                type=relationship_types[r["typeId"]],
+                type_id=r["typeId"]
             )
-        else:
-            # Load relationships
-            relationships_df = pd.read_csv(
-                f"{path}/Snapshot/Terminology/sct2_Relationship_Snapshot_INT_{release_date}.txt", 
-                delimiter="\t"
-            )
-            relationships_df = relationships_df[relationships_df.active == 1]
-            
-            # Load concepts
-            concepts_df = pd.read_csv(
-                f"{path}/Snapshot/Terminology/sct2_Description_Snapshot-en_INT_{release_date}.txt", 
-                delimiter="\t"
-            )
-            concepts_df = concepts_df[concepts_df.active == 1]
-            concepts_df.set_index("conceptId", inplace=True)
 
-            # Create relationships type lookup
-            relationship_types = concepts_df.loc[relationships_df.typeId.unique()]
-            relationship_types = relationship_types[relationship_types.typeId == SnomedGraph.fsn_typeId]
-            relationship_types = relationship_types.term.to_dict()
+        # Add concepts            
+        print("Adding Concepts...")
+        for sctid, rows in tqdm(concepts_df.groupby(concepts_df.index)):
+            synonyms = [row.term for _, row in rows.iterrows() if row.typeId != SnomedGraph.fsn_typeId]
+            try:
+                fsn = rows[rows.typeId == SnomedGraph.fsn_typeId].term.values[0]
+            except IndexError:
+                fsn = synonyms[0]
+                synonyms = synonyms[1:]
+                print(f"Concept with SCTID {sctid} has no FSN. Using synonym '{fsn}' instead.")
+            G.add_node(sctid, fsn=fsn, synonyms=synonyms)
 
-            # Initialise the graph
-            n_concepts = concepts_df.shape[0]
-            n_relationships = relationships_df.shape[0]
-            print(f"{n_concepts} terms and {n_relationships} relationships were found in the release.")
-            G = nx.DiGraph()            
-
-            # Create relationships
-            print("Creating Relationships...")
-            for r in tqdm(relationships_df.to_dict(orient="records")):
-                G.add_edge(        
-                    r["sourceId"], 
-                    r["destinationId"], 
-                    group=r["relationshipGroup"], 
-                    type=relationship_types[r["typeId"]],
-                    type_id=r["typeId"]
-                )
-
-            # Add concepts            
-            print("Adding Concepts...")
-            for sctid, rows in tqdm(concepts_df.groupby(concepts_df.index)):
-                synonyms = [row.term for _, row in rows.iterrows() if row.typeId != SnomedGraph.fsn_typeId]
-                try:
-                    fsn = rows[rows.typeId == SnomedGraph.fsn_typeId].term.values[0]
-                except IndexError:
-                    fsn = synonyms[0]
-                    synonyms = synonyms[1:]
-                    print(f"Concept with SCTID {sctid} has no FSN. Using synonym '{fsn}' instead.")
-                G.add_node(sctid, fsn=fsn, synonyms=synonyms)
-
-            # Remove isolates
-            G.remove_nodes_from(list(nx.isolates(G)))
-            
-            # Initialise class            
-            return SnomedGraph(G)
-    
+        # Remove isolates
+        G.remove_nodes_from(list(nx.isolates(G)))
+        
+        # Initialise class            
+        return SnomedGraph(G)
