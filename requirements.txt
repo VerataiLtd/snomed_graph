@@ -1,4 +1,3 @@
 pandas
-babel
 tqdm
-networkx
+networkx>=3.0
