@@ -3,7 +3,7 @@ import networkx as nx
 from tqdm.notebook import tqdm
 from itertools import groupby
 import re
-from itertools import pairwise
+from more_itertools import pairwise
 from typing import Generator, Dict, List, Tuple, Type, Set
 import os
 from datetime import datetime
